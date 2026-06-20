@@ -970,4 +970,384 @@ describe('createAsyncThunk', () => {
       expect(dispatchedActions[1].type).toBe('test/fetchData/fulfilled')
     })
   })
+
+  describe('abort()', () => {
+    it('abort method exists on the returned promise', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => 'data',
+      )
+
+      const promise = store.dispatch(fetchData()) as any
+      expect(typeof promise.abort).toBe('function')
+    })
+
+    it('calling abort sets signal.aborted to true', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+      let capturedSignal: AbortSignal | null = null
+      const deferred: { resolve: null | (() => void) } = { resolve: null }
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async (_, thunkApi) => {
+          capturedSignal = thunkApi.signal
+          await new Promise<void>(resolve => {
+            deferred.resolve = resolve
+          })
+          return 'data'
+        },
+      )
+
+      const promise = store.dispatch(fetchData()) as any
+
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(capturedSignal).not.toBeNull()
+      promise.abort()
+      expect(capturedSignal!.aborted).toBe(true)
+
+      deferred.resolve?.()
+      await promise
+    })
+
+    it('aborted dispatch results in rejected action with meta.aborted=true', async () => {
+      const { store, dispatchedActions } = createLoggingStore(reducer)
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async (_, thunkApi) => {
+          await new Promise(resolve => setTimeout(resolve, 50))
+          if (thunkApi.signal.aborted) {
+            throw new DOMException('Aborted', 'AbortError')
+          }
+          return 'data'
+        },
+      )
+
+      const promise = store.dispatch(fetchData()) as any
+      promise.abort()
+
+      const result = await promise
+
+      expect(result.meta.aborted).toBe(true)
+      expect(result.meta.requestStatus).toBe('rejected')
+      expect(dispatchedActions[1].meta.aborted).toBe(true)
+    })
+
+    it('abort is a no-op after the promise resolves', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => 'data',
+      )
+
+      const promise: any = store.dispatch(fetchData())
+      await promise
+
+      expect(() => promise.abort()).not.toThrow()
+    })
+
+    it('abort is a no-op when called multiple times', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+      let signal: AbortSignal | null = null
+      const deferred: { resolve: null | (() => void) } = { resolve: null }
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async (_, thunkApi) => {
+          signal = thunkApi.signal
+          await new Promise<void>(resolve => {
+            deferred.resolve = resolve
+          })
+          return 'data'
+        },
+      )
+
+      const promise: any = store.dispatch(fetchData())
+
+      await Promise.resolve()
+      await Promise.resolve()
+
+      promise.abort()
+      promise.abort()
+      promise.abort()
+
+      expect(signal!.aborted).toBe(true)
+
+      deferred.resolve?.()
+      await promise
+    })
+
+    it('abort can be called with a reason', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+      let signal: AbortSignal | null = null
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async (_, thunkApi) => {
+          signal = thunkApi.signal
+          return 'data'
+        },
+      )
+
+      const promise: any = store.dispatch(fetchData())
+      await promise
+      promise.abort('custom reason')
+
+      expect(signal!).not.toBeNull()
+    })
+
+    it('condition-skip has abort() no-op', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => 'data',
+        {
+          condition: () => false,
+        },
+      )
+
+      const promise: any = store.dispatch(fetchData())
+      expect(typeof promise.abort).toBe('function')
+      expect(() => promise.abort()).not.toThrow()
+
+      const result = await promise
+      expect(result.meta.condition).toBe(true)
+      expect(result.meta.aborted).toBe(false)
+    })
+  })
+
+  describe('unwrap()', () => {
+    it('unwrap method exists on the returned promise', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => 'data',
+      )
+
+      const promise = store.dispatch(fetchData()) as any
+      expect(typeof promise.unwrap).toBe('function')
+    })
+
+    it('unwrap returns the payload on success', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => 'success data',
+      )
+
+      const result = await (store.dispatch(fetchData()) as any).unwrap()
+
+      expect(result).toBe('success data')
+    })
+
+    it('unwrap throws on failure', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => {
+          throw new Error('network error')
+        },
+      )
+
+      await expect(
+        (store.dispatch(fetchData()) as any).unwrap(),
+      ).rejects.toThrow('network error')
+    })
+
+    it('unwrap error has correct name and message', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      class CustomError extends Error {
+        code = 'CUSTOM'
+        constructor(message: string) {
+          super(message)
+          this.name = 'CustomError'
+        }
+      }
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => {
+          throw new CustomError('custom message')
+        },
+      )
+
+      let caughtError: any = null
+      try {
+        await (store.dispatch(fetchData()) as any).unwrap()
+      } catch (err: any) {
+        caughtError = err
+      }
+
+      expect(caughtError).not.toBeNull()
+      expect(caughtError.message).toBe('custom message')
+      expect(caughtError.name).toBe('CustomError')
+    })
+
+    it('unwrap throws with payload for rejectWithValue', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      const fetchData = createAsyncThunk<
+        string,
+        void,
+        TestState,
+        undefined,
+        any,
+        { code: number; detail: string }
+      >(
+        'test/fetchData',
+        async (_, thunkApi) => {
+          throw thunkApi.rejectWithValue(
+            { code: 404, detail: 'Not found' },
+            new Error('Resource not found'),
+          )
+        },
+      )
+
+      let caughtError: any = null
+      try {
+        await (store.dispatch(fetchData()) as any).unwrap()
+      } catch (err: any) {
+        caughtError = err
+      }
+
+      expect(caughtError).not.toBeNull()
+      expect(caughtError.message).toBe('Resource not found')
+      expect(caughtError.payload).toEqual({ code: 404, detail: 'Not found' })
+    })
+
+    it('condition-skip unwrap throws with condition error', async () => {
+      const store = createStore(reducer, applyMiddleware(thunk))
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => 'data',
+        {
+          condition: () => false,
+        },
+      )
+
+      await expect(
+        (store.dispatch(fetchData()) as any).unwrap(),
+      ).rejects.toThrow('Aborted due to condition callback returning false.')
+    })
+  })
+
+  describe('serializeError option', () => {
+    it('uses custom serializeError when provided', async () => {
+      const { store, dispatchedActions } = createLoggingStore(reducer)
+
+      const customSerializeError = (err: any) => ({
+        customMessage: err.message,
+        customCode: err.code,
+        customName: err.name,
+      })
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => {
+          const err: any = new Error('test error')
+          err.code = 'TEST_ERR'
+          throw err
+        },
+        {
+          serializeError: customSerializeError,
+        },
+      )
+
+      await store.dispatch(fetchData())
+
+      const rejectedAction = dispatchedActions.find(
+        a => a.meta?.requestStatus === 'rejected',
+      )
+      expect(rejectedAction.error.customMessage).toBe('test error')
+      expect(rejectedAction.error.customCode).toBe('TEST_ERR')
+      expect(rejectedAction.error.customName).toBe('Error')
+    })
+
+    it('default serializeError handles plain objects', async () => {
+      const { store, dispatchedActions } = createLoggingStore(reducer)
+
+      const fetchData = createAsyncThunk(
+        'test/fetchData',
+        async () => {
+          throw { message: 'oops', code: 42 }
+        },
+      )
+
+      await store.dispatch(fetchData())
+
+      const rejectedAction = dispatchedActions.find(
+        a => a.meta?.requestStatus === 'rejected',
+      )
+      expect(rejectedAction.error.message).toBe('oops')
+      expect(rejectedAction.error.code).toBe(42)
+      expect(rejectedAction.error.name).toBe('Error')
+    })
+  })
+
+  describe('rejectWithValue patterns', () => {
+    it('throw rejectWithValue results in rejected action', async () => {
+      const { store, dispatchedActions } = createLoggingStore(reducer)
+
+      const fetchData = createAsyncThunk<string, void, TestState, undefined, any, number>(
+        'test/fetchData',
+        async (_, thunkApi) => {
+          throw thunkApi.rejectWithValue(404, new Error('Not found'))
+        },
+      )
+
+      await store.dispatch(fetchData())
+
+      const rejectedAction = dispatchedActions[1]
+      expect(rejectedAction.type).toBe('test/fetchData/rejected')
+      expect(rejectedAction.payload).toBe(404)
+      expect(rejectedAction.meta.rejectedWithValue).toBe(true)
+      expect(rejectedAction.error.message).toBe('Not found')
+    })
+
+    it('return rejectWithValue results in rejected action', async () => {
+      const { store, dispatchedActions } = createLoggingStore(reducer)
+
+      const fetchData = createAsyncThunk<string, void, TestState, undefined, any, string>(
+        'test/fetchData',
+        async (_, thunkApi) => {
+          return thunkApi.rejectWithValue('custom error', new Error('fail')) as any
+        },
+      )
+
+      await store.dispatch(fetchData())
+
+      const rejectedAction = dispatchedActions[1]
+      expect(rejectedAction.type).toBe('test/fetchData/rejected')
+      expect(rejectedAction.payload).toBe('custom error')
+      expect(rejectedAction.meta.rejectedWithValue).toBe(true)
+    })
+
+    it('rejectWithValue without error argument uses default error', async () => {
+      const { store, dispatchedActions } = createLoggingStore(reducer)
+
+      const fetchData = createAsyncThunk<string, void, TestState, undefined, any, string>(
+        'test/fetchData',
+        async (_, thunkApi) => {
+          throw thunkApi.rejectWithValue('payload')
+        },
+      )
+
+      await store.dispatch(fetchData())
+
+      const rejectedAction = dispatchedActions[1]
+      expect(rejectedAction.error.message).toBe('Rejected with value')
+      expect(rejectedAction.error.name).toBe('Error')
+    })
+  })
 })

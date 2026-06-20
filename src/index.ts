@@ -13,6 +13,7 @@ export type {
   FulfilledAction,
   RejectedAction,
   AsyncThunkAction,
+  AsyncThunkPromise,
   AsyncThunkPayloadCreator,
   AsyncThunk,
   CreateAsyncThunkOptions,

@@ -3,6 +3,7 @@ import type {
   AsyncThunk,
   AsyncThunkAction,
   AsyncThunkPayloadCreator,
+  AsyncThunkPromise,
   CreateAsyncThunkOptions,
   FulfilledAction,
   PendingAction,
@@ -270,5 +271,53 @@ describe('createAsyncThunk type tests', () => {
 
     expectTypeOf(thunk).toBeCallableWith(42)
     expectTypeOf(thunk.typePrefix).toBeString()
+  })
+
+  test('AsyncThunkPromise has abort and unwrap methods', () => {
+    type MyPromise = AsyncThunkPromise<string, number, string>
+
+    const thunk = createAsyncThunk<
+      string,
+      number,
+      State,
+      undefined,
+      any,
+      string
+    >('test/fetch', async (id) => `result-${id}`)
+
+    const promise = thunk(42)(
+      store.dispatch,
+      store.getState,
+      undefined,
+    )
+
+    expectTypeOf(promise.abort).toBeCallableWith()
+    expectTypeOf(promise.abort).toBeCallableWith('reason')
+    expectTypeOf(promise.unwrap).toBeCallableWith()
+    expectTypeOf(promise.unwrap()).resolves.toBeString()
+  })
+
+  test('serializeError option type', () => {
+    interface CustomErrorShape {
+      customMessage: string
+      customCode: string
+    }
+
+    const customSerialize = (err: any): CustomErrorShape => ({
+      customMessage: err.message,
+      customCode: err.code,
+    })
+
+    const options: CreateAsyncThunkOptions<string, State, undefined> = {
+      serializeError: customSerialize,
+    }
+
+    const fetchUser = createAsyncThunk<string, string, State, undefined>(
+      'users/fetch',
+      async (id) => `user-${id}`,
+      options,
+    )
+
+    expectTypeOf(fetchUser).toBeCallableWith('abc')
   })
 })
