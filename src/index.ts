@@ -15,6 +15,7 @@ export type {
   AsyncThunkAction,
   AsyncThunkPayloadCreator,
   AsyncThunk,
+  CreateAsyncThunkOptions,
 } from './createAsyncThunk'
 
 export { createAsyncThunk } from './createAsyncThunk'

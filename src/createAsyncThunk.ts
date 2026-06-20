@@ -1,6 +1,10 @@
 import type { Action } from 'redux'
 import type { ThunkAction, ThunkDispatch } from './types'
 
+const REJECT_WITH_VALUE_SYMBOL: unique symbol = Symbol.for(
+  'redux-thunk/rejectWithValue',
+)
+
 export interface PendingAction<ThunkArg> extends Action<string> {
   type: string
   meta: {
@@ -20,7 +24,8 @@ export interface FulfilledAction<ThunkArg, Returned> extends Action<string> {
   }
 }
 
-export interface RejectedAction<ThunkArg, RejectedValue> extends Action<string> {
+export interface RejectedAction<ThunkArg, RejectedValue>
+  extends Action<string> {
   type: string
   payload?: RejectedValue
   error: {
@@ -56,8 +61,18 @@ export type AsyncThunkAction<
   BasicAction
 >
 
-export interface AsyncThunkPayloadCreatorReturnValue<Returned, ThunkApi> {
-  (api: ThunkApi): Promise<Returned>
+interface RejectWithValue<RejectedValue> {
+  (value: RejectedValue, error?: Error): {
+    [REJECT_WITH_VALUE_SYMBOL]: true
+    value: RejectedValue
+    error: Error
+  }
+}
+
+interface RejectWithValueResult<RejectedValue> {
+  [REJECT_WITH_VALUE_SYMBOL]: true
+  value: RejectedValue
+  error: Error
 }
 
 export interface AsyncThunkPayloadCreator<
@@ -74,12 +89,26 @@ export interface AsyncThunkPayloadCreator<
       getState: () => State
       extra: ExtraThunkArg
       requestId: string
-      rejectWithValue: (value: RejectedValue, error?: Error) => {
-        value: RejectedValue
-        error: Error
-      }
+      signal: AbortSignal
+      rejectWithValue: RejectWithValue<RejectedValue>
     },
   ): Promise<Returned>
+}
+
+export interface CreateAsyncThunkOptions<
+  ThunkArg,
+  State = any,
+  ExtraThunkArg = undefined,
+> {
+  condition?(
+    arg: ThunkArg,
+    thunkApi: {
+      getState: () => State
+      extra: ExtraThunkArg
+    },
+  ): boolean | undefined
+  dispatchConditionRejection?: boolean
+  idGenerator?(arg: ThunkArg): string
 }
 
 export interface AsyncThunk<
@@ -115,7 +144,7 @@ export interface AsyncThunk<
 }
 
 let nextId = 0
-function generateRequestId() {
+function defaultRequestId() {
   return `${++nextId}`
 }
 
@@ -131,6 +160,14 @@ function serializeError(error: any): {
     stack: error?.stack,
     code: error?.code,
   }
+}
+
+function isRejectWithValueResult(obj: any): obj is RejectWithValueResult<any> {
+  return (
+    obj &&
+    typeof obj === 'object' &&
+    obj[REJECT_WITH_VALUE_SYMBOL] === true
+  )
 }
 
 export function createAsyncThunk<
@@ -149,6 +186,7 @@ export function createAsyncThunk<
     ExtraThunkArg,
     RejectedValue
   >,
+  options?: CreateAsyncThunkOptions<ThunkArg, State, ExtraThunkArg>,
 ): AsyncThunk<
   Returned,
   ThunkArg,
@@ -161,7 +199,10 @@ export function createAsyncThunk<
   const fulfilledType = `${typePrefix}/fulfilled`
   const rejectedType = `${typePrefix}/rejected`
 
-  const pending = (requestId: string, arg: ThunkArg): PendingAction<ThunkArg> => ({
+  const pending = (
+    requestId: string,
+    arg: ThunkArg,
+  ): PendingAction<ThunkArg> => ({
     type: pendingType,
     meta: {
       arg,
@@ -189,6 +230,7 @@ export function createAsyncThunk<
     requestId: string,
     arg: ThunkArg,
     payload?: RejectedValue,
+    condition: boolean = false,
   ): RejectedAction<ThunkArg, RejectedValue> => ({
     type: rejectedType,
     payload,
@@ -198,7 +240,7 @@ export function createAsyncThunk<
       requestId,
       requestStatus: 'rejected',
       aborted: false,
-      condition: false,
+      condition,
       rejectedWithValue: typeof payload !== 'undefined',
     },
   })
@@ -214,14 +256,48 @@ export function createAsyncThunk<
     RejectedValue
   > {
     return (dispatch, getState, extra) => {
-      const requestId = generateRequestId()
+      const idGenerator = options?.idGenerator ?? defaultRequestId
+      const requestId = idGenerator(arg)
+
+      const conditionResult = options?.condition?.(arg, { getState, extra })
+      if (conditionResult === false) {
+        if (options?.dispatchConditionRejection) {
+          dispatch(
+            rejected(
+              new Error('Aborted due to condition callback returning false.'),
+              requestId,
+              arg,
+              undefined,
+              true,
+            ) as unknown as BasicAction,
+          )
+        }
+        return Promise.resolve(
+          rejected(
+            new Error('Aborted due to condition callback returning false.'),
+            requestId,
+            arg,
+            undefined,
+            true,
+          ),
+        )
+      }
+
+      const abortController = new AbortController()
 
       dispatch(pending(requestId, arg) as unknown as BasicAction)
 
-      const rejectWithValue = (value: RejectedValue, error?: Error) => ({
+      const rejectWithValue: RejectWithValue<RejectedValue> = (
         value,
-        error: error ?? new Error('Rejected with value'),
-      })
+        error,
+      ) => {
+        const result: RejectWithValueResult<RejectedValue> = {
+          [REJECT_WITH_VALUE_SYMBOL]: true,
+          value,
+          error: error ?? new Error('Rejected with value'),
+        }
+        return result
+      }
 
       return Promise.resolve()
         .then(() =>
@@ -230,22 +306,18 @@ export function createAsyncThunk<
             getState,
             extra,
             requestId,
+            signal: abortController.signal,
             rejectWithValue,
           }),
         )
         .then(
           result => {
-            if (
-              result &&
-              typeof result === 'object' &&
-              'value' in result &&
-              'error' in result
-            ) {
+            if (isRejectWithValueResult(result)) {
               const action = rejected(
-                (result as any).error,
+                result.error,
                 requestId,
                 arg,
-                (result as any).value,
+                result.value,
               )
               dispatch(action as unknown as BasicAction)
               return action
@@ -255,17 +327,12 @@ export function createAsyncThunk<
             return action
           },
           err => {
-            if (
-              err &&
-              typeof err === 'object' &&
-              'value' in err &&
-              'error' in err
-            ) {
+            if (isRejectWithValueResult(err)) {
               const action = rejected(
-                (err as any).error,
+                err.error,
                 requestId,
                 arg,
-                (err as any).value,
+                err.value,
               )
               dispatch(action as unknown as BasicAction)
               return action
