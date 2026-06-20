@@ -8,6 +8,17 @@ export type {
   ThunkMiddleware,
 } from './types'
 
+export type {
+  PendingAction,
+  FulfilledAction,
+  RejectedAction,
+  AsyncThunkAction,
+  AsyncThunkPayloadCreator,
+  AsyncThunk,
+} from './createAsyncThunk'
+
+export { createAsyncThunk } from './createAsyncThunk'
+
 /** A function that accepts a potential "extra argument" value to be injected later,
  * and returns an instance of the thunk middleware that uses that value
  */
